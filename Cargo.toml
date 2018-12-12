@@ -1,0 +1,7 @@
+[package]
+name = "domino"
+version = "0.1.0"
+authors = [" <>"]
+
+[dependencies]
+log = "0.4"

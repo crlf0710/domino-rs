@@ -1,5 +1,10 @@
 #[macro_use]
 extern crate log;
+#[cfg(feature = "galemu")]
+extern crate galemu;
+
+#[cfg(feature = "galemu")]
+pub use galemu::{Bound, BoundExt};
 
 #[allow(dead_code)]
 mod command_queue {
@@ -41,7 +46,10 @@ mod command_queue {
             self.current_frame.push_back(new_command);
         }
 
-        pub fn append_commands_to_current_frame<I: IntoIterator<Item = T>>(&mut self, new_commands: I) {
+        pub fn append_commands_to_current_frame<I: IntoIterator<Item = T>>(
+            &mut self,
+            new_commands: I,
+        ) {
             self.current_frame.extend(new_commands);
         }
 
@@ -53,14 +61,16 @@ mod command_queue {
             bottom_frame.push_back(new_command);
         }
 
-        pub fn append_commands_to_bottom_frame<I: IntoIterator<Item = T>>(&mut self, new_commands: I) {
+        pub fn append_commands_to_bottom_frame<I: IntoIterator<Item = T>>(
+            &mut self,
+            new_commands: I,
+        ) {
             let bottom_frame = self
                 .stashed_frames
                 .get_mut(0)
                 .unwrap_or(&mut self.current_frame);
             bottom_frame.extend(new_commands);
         }
-
 
         pub fn start_new_frame(&mut self) {
             use std::mem::swap;
@@ -100,6 +110,9 @@ pub mod mvc {
     use command_queue::CommandList;
     use std::fmt::Debug;
 
+    #[cfg(feature = "galemu")]
+    use galemu::{Bound, BoundExt};
+
     #[derive(Debug)]
     enum MVCMessage<M: Model<V, C>, V: View<M, C>, C: Controller<M, V>> {
         ModelCommand(M::Command),
@@ -117,7 +130,10 @@ pub mod mvc {
     }
 
     impl<M, V, C> MVCSystem<M, V, C>
-        where M: Model<V, C>, V: View<M, C>, C: Controller<M, V>
+    where
+        M: Model<V, C>,
+        V: View<M, C>,
+        C: Controller<M, V>,
     {
         pub fn new(model: M, view: V, controller: C) -> Self {
             MVCSystem {
@@ -140,12 +156,8 @@ pub mod mvc {
             &self.controller
         }
 
-        pub fn process_input(
-            &mut self,
-            input: impl Into<C::Command>,
-        ) {
-            self
-                .command_list
+        pub fn process_input(&mut self, input: impl Into<C::Command>) {
+            self.command_list
                 .add_command_to_bottom_frame(MVCMessage::ControllerCommand(input.into()));
             self.exec_pending_commands();
         }
@@ -155,42 +167,58 @@ pub mod mvc {
             self.exec_pending_commands();
         }
 
-        pub fn sync_output(&self) where V::OutputParameter : Default {
+        pub fn sync_output(&self)
+        where
+            V::OutputParameter: Default,
+        {
             let mut param = Default::default();
-            self.view.sync_output_with_parameter(&self.model, &mut param);
+            self.view
+                .sync_output_with_parameter(&self.model, &mut param);
         }
 
         pub fn sync_output_with_parameter(&self, param: &mut V::OutputParameter) {
             self.view.sync_output_with_parameter(&self.model, param);
         }
 
+        #[cfg(feature = "galemu")]
+        pub fn sync_output_with_parameter_and_bound(&self, param: &mut Bound<V::OutputParameter>)
+        where
+            V::OutputParameter: for<'a> BoundExt<'a>,
+        {
+            self.view
+                .sync_output_with_parameter_and_bound(&self.model, param);
+        }
+
         fn exec_immediate_command(&mut self, command: MVCMessage<M, V, C>) {
             match command {
                 MVCMessage::ModelCommand(model_command) => {
                     self.command_list.start_new_frame();
-                    let model_token = ModelToken{system: self};
+                    let model_token = ModelToken { system: self };
                     M::process_command(model_token, model_command);
-                },
+                }
                 MVCMessage::ModelUpdateView(model_notification) => {
-                    if let Some(view_command) = V::translate_model_notification(model_notification) {
+                    if let Some(view_command) = V::translate_model_notification(model_notification)
+                    {
                         self.exec_immediate_command(MVCMessage::ViewCommand(view_command));
                     }
-                },
+                }
                 MVCMessage::ViewCommand(view_command) => {
                     self.command_list.start_new_frame();
-                    let view_token = ViewToken{system: self};
+                    let view_token = ViewToken { system: self };
                     V::process_command(view_token, view_command);
-                },
+                }
                 MVCMessage::ControllerManipulatesModel(controller_notification) => {
-                    if let Some(model_command) = M::translate_controller_notification(controller_notification) {
+                    if let Some(model_command) =
+                        M::translate_controller_notification(controller_notification)
+                    {
                         self.exec_immediate_command(MVCMessage::ModelCommand(model_command));
                     }
-                },
+                }
                 MVCMessage::ControllerCommand(controller_command) => {
                     self.command_list.start_new_frame();
-                    let controller_token = ControllerToken{system: self};
+                    let controller_token = ControllerToken { system: self };
                     C::process_command(controller_token, controller_command);
-                },
+                }
             }
         }
 
@@ -206,14 +234,16 @@ pub mod mvc {
         }
     }
 
-
     pub struct ModelToken<'a, M: Model<V, C>, V: View<M, C>, C: Controller<M, V>> {
         system: &'a mut MVCSystem<M, V, C>,
     }
 
     impl<'a, M, V, C> ModelToken<'a, M, V, C>
-        where M: Model<V, C>, V: View<M, C>, C: Controller<M, V> {
-
+    where
+        M: Model<V, C>,
+        V: View<M, C>,
+        C: Controller<M, V>,
+    {
         pub fn model(&self) -> &M {
             &self.system.model
         }
@@ -223,27 +253,37 @@ pub mod mvc {
         }
 
         pub fn exec_command_now(&mut self, command: M::Command) {
-            self.system.exec_immediate_command_in_new_frame(MVCMessage::ModelCommand(command));
+            self.system
+                .exec_immediate_command_in_new_frame(MVCMessage::ModelCommand(command));
         }
 
         pub fn exec_command_next(&mut self, command: M::Command) {
-            self.system.command_list.add_command_to_current_frame(MVCMessage::ModelCommand(command));
+            self.system
+                .command_list
+                .add_command_to_current_frame(MVCMessage::ModelCommand(command));
         }
 
         pub fn exec_command_later(&mut self, command: M::Command) {
-            self.system.command_list.add_command_to_bottom_frame(MVCMessage::ModelCommand(command));
+            self.system
+                .command_list
+                .add_command_to_bottom_frame(MVCMessage::ModelCommand(command));
         }
 
         pub fn update_view_now(&mut self, notification: M::Notification) {
-            self.system.exec_immediate_command_in_new_frame(MVCMessage::ModelUpdateView(notification));
+            self.system
+                .exec_immediate_command_in_new_frame(MVCMessage::ModelUpdateView(notification));
         }
 
         pub fn update_view_next(&mut self, notification: M::Notification) {
-            self.system.command_list.add_command_to_current_frame(MVCMessage::ModelUpdateView(notification))
+            self.system
+                .command_list
+                .add_command_to_current_frame(MVCMessage::ModelUpdateView(notification))
         }
 
         pub fn update_view_later(&mut self, notification: M::Notification) {
-            self.system.command_list.add_command_to_bottom_frame(MVCMessage::ModelUpdateView(notification))
+            self.system
+                .command_list
+                .add_command_to_bottom_frame(MVCMessage::ModelUpdateView(notification))
         }
     }
 
@@ -252,8 +292,11 @@ pub mod mvc {
     }
 
     impl<'a, M, V, C> ViewToken<'a, M, V, C>
-        where M: Model<V, C>, V: View<M, C>, C: Controller<M, V> {
-
+    where
+        M: Model<V, C>,
+        V: View<M, C>,
+        C: Controller<M, V>,
+    {
         pub fn view(&self) -> &V {
             &self.system.view
         }
@@ -267,41 +310,63 @@ pub mod mvc {
         }
 
         pub fn exec_command_now(&mut self, command: V::Command) {
-            self.system.exec_immediate_command_in_new_frame(MVCMessage::ViewCommand(command));
+            self.system
+                .exec_immediate_command_in_new_frame(MVCMessage::ViewCommand(command));
         }
 
         pub fn exec_command_next(&mut self, command: V::Command) {
-            self.system.command_list.add_command_to_current_frame(MVCMessage::ViewCommand(command));
+            self.system
+                .command_list
+                .add_command_to_current_frame(MVCMessage::ViewCommand(command));
         }
 
         pub fn exec_command_later(&mut self, command: V::Command) {
-            self.system.command_list.add_command_to_bottom_frame(MVCMessage::ViewCommand(command));
+            self.system
+                .command_list
+                .add_command_to_bottom_frame(MVCMessage::ViewCommand(command));
         }
 
         pub fn redirect_output_target(&mut self, target: Option<V::OutputTarget>) {
             self.system.view.redirect_output_target(target);
         }
 
-        pub fn sync_output(&self) where V::OutputParameter : Default {
+        pub fn sync_output(&self)
+        where
+            V::OutputParameter: Default,
+        {
             let mut param = Default::default();
-            self.system.view.sync_output_with_parameter(&self.system.model, &mut param);
+            self.system
+                .view
+                .sync_output_with_parameter(&self.system.model, &mut param);
         }
 
         pub fn sync_output_with_parameter(&self, param: &mut V::OutputParameter) {
-            self.system.view.sync_output_with_parameter(&self.system.model, param);
+            self.system
+                .view
+                .sync_output_with_parameter(&self.system.model, param);
         }
 
+        #[cfg(feature = "galemu")]
+        pub fn sync_output_with_parameter_and_bound(&self, param: &mut Bound<V::OutputParameter>)
+        where
+            V::OutputParameter: for<'x> BoundExt<'x>,
+        {
+            self.system
+                .view
+                .sync_output_with_parameter_and_bound(&self.system.model, param);
+        }
     }
-
 
     pub struct ControllerToken<'a, M: Model<V, C>, V: View<M, C>, C: Controller<M, V>> {
         system: &'a mut MVCSystem<M, V, C>,
     }
 
-
     impl<'a, M, V, C> ControllerToken<'a, M, V, C>
-        where M: Model<V, C>, V: View<M, C>, C: Controller<M, V> {
-
+    where
+        M: Model<V, C>,
+        V: View<M, C>,
+        C: Controller<M, V>,
+    {
         pub fn controller(&self) -> &C {
             &self.system.controller
         }
@@ -311,30 +376,40 @@ pub mod mvc {
         }
 
         pub fn exec_command_now(&mut self, command: C::Command) {
-            self.system.exec_immediate_command_in_new_frame(MVCMessage::ControllerCommand(command));
+            self.system
+                .exec_immediate_command_in_new_frame(MVCMessage::ControllerCommand(command));
         }
 
         pub fn exec_command_next(&mut self, command: C::Command) {
-            self.system.command_list.add_command_to_current_frame(MVCMessage::ControllerCommand(command));
+            self.system
+                .command_list
+                .add_command_to_current_frame(MVCMessage::ControllerCommand(command));
         }
 
         pub fn exec_command_later(&mut self, command: C::Command) {
-            self.system.command_list.add_command_to_bottom_frame(MVCMessage::ControllerCommand(command));
+            self.system
+                .command_list
+                .add_command_to_bottom_frame(MVCMessage::ControllerCommand(command));
         }
 
         pub fn manipulate_model_now(&mut self, notification: C::Notification) {
-            self.system.exec_immediate_command_in_new_frame(MVCMessage::ControllerManipulatesModel(notification));
+            self.system.exec_immediate_command_in_new_frame(
+                MVCMessage::ControllerManipulatesModel(notification),
+            );
         }
 
         pub fn manipulate_model_next(&mut self, notification: C::Notification) {
-            self.system.command_list.add_command_to_current_frame(MVCMessage::ControllerManipulatesModel(notification))
+            self.system
+                .command_list
+                .add_command_to_current_frame(MVCMessage::ControllerManipulatesModel(notification))
         }
 
         pub fn manipulate_model_later(&mut self, notification: C::Notification) {
-            self.system.command_list.add_command_to_bottom_frame(MVCMessage::ControllerManipulatesModel(notification))
+            self.system
+                .command_list
+                .add_command_to_bottom_frame(MVCMessage::ControllerManipulatesModel(notification))
         }
     }
-
 
     pub trait Model<V: View<Self, C>, C: Controller<Self, V>>: Sized + 'static {
         type Command: Debug;
@@ -345,8 +420,13 @@ pub mod mvc {
             debug!("Executing model command: {:?}", command);
         }
 
-        fn translate_controller_notification(controller_notification: C::Notification) -> Option<Self::Command> {
-            debug!("Translating controller notification to model command: {:?} -> {:?}", controller_notification, "None");
+        fn translate_controller_notification(
+            controller_notification: C::Notification,
+        ) -> Option<Self::Command> {
+            debug!(
+                "Translating controller notification to model command: {:?} -> {:?}",
+                controller_notification, "None"
+            );
             None
         }
     }
@@ -361,22 +441,39 @@ pub mod mvc {
             debug!("Executing view command: {:?}", command);
         }
 
-        fn translate_model_notification(model_notification: M::Notification) -> Option<Self::Command> {
-            debug!("Translating model notification to view command: {:?} -> {:?}", model_notification, "None");
+        fn translate_model_notification(
+            model_notification: M::Notification,
+        ) -> Option<Self::Command> {
+            debug!(
+                "Translating model notification to view command: {:?} -> {:?}",
+                model_notification, "None"
+            );
             None
         }
 
         fn redirect_output_target(&mut self, target: Option<Self::OutputTarget>) {
-            debug!("Redirecting output target to: {}", if target.is_some() { "<target>"} else { "None"});
+            debug!(
+                "Redirecting output target to: {}",
+                if target.is_some() { "<target>" } else { "None" }
+            );
         }
 
         #[allow(unused_variables)]
-        fn sync_output_with_parameter(
-            &self, model: &M, parameter: &mut Self::OutputParameter
-        ) {
+        fn sync_output_with_parameter(&self, model: &M, parameter: &mut Self::OutputParameter) {
             debug!("Sync output");
         }
 
+        #[cfg(feature = "galemu")]
+        #[allow(unused_variables)]
+        fn sync_output_with_parameter_and_bound(
+            &self,
+            model: &M,
+            param: &mut Bound<Self::OutputParameter>,
+        ) where
+            Self::OutputParameter: for<'x> BoundExt<'x>,
+        {
+            debug!("Sync output");
+        }
     }
 
     pub trait Controller<M: Model<V, Self>, V: View<M, Self>>: Sized + 'static {
